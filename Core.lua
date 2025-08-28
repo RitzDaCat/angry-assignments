@@ -45,6 +45,12 @@ local warnedPermission = false
 
 local currentGroup = nil
 
+-- Presence tracking for collaborative editing
+local pagePresence = {} -- [pageId] = { [playerName] = { status = "viewing/editing", cursorPos = 0, lastUpdate = time } }
+local presenceUpdateTimer = nil
+local liveEditBuffer = {} -- Buffer for incoming live edits
+local liveEditTimer = nil
+
 -- Pages Saved Variable Format 
 -- 	AngryAssign_Pages = {
 -- 		[Id] = { Id = 1231, Updated = time(), UpdateId = self:Hash(name, contents), Name = "Name", Contents = "...", Backup = "...", CategoryId = 123 },
@@ -71,6 +77,12 @@ local currentGroup = nil
 --
 -- { "VER_QUERY" }
 -- { "VERSION", [Version], [Project Timestamp], [Valid Raid] }
+--
+-- { "PRESENCE", [Page Id], [Status], [Player Name], [Cursor Position] }
+-- Sent when someone opens/closes/edits a page. Status: "viewing", "editing", "closed". Uses GUILD.
+--
+-- { "LIVE_EDIT", [Page Id], [Change Type], [Position], [Text], [Length] }
+-- Sent during live editing. Change Type: "insert", "delete". Uses GUILD with throttling.
 
 -- Constants for dealing with our addon communication
 local COMMAND = 1
@@ -90,6 +102,17 @@ local DISPLAY_UpdateId = 4
 local VERSION_Version = 2
 local VERSION_Timestamp = 3
 local VERSION_ValidRaid = 4
+
+local PRESENCE_PageId = 2
+local PRESENCE_Status = 3
+local PRESENCE_PlayerName = 4
+local PRESENCE_CursorPos = 5
+
+local LIVE_EDIT_PageId = 2
+local LIVE_EDIT_ChangeType = 3
+local LIVE_EDIT_Position = 4
+local LIVE_EDIT_Text = 5
+local LIVE_EDIT_Length = 6
 
 local EasyMenu = EasyMenu
 if not EasyMenu then
@@ -341,6 +364,43 @@ function AngryAssign:ProcessMessage(sender, data)
 		end
 
 		versionList[ sender ] = { valid = data[VERSION_ValidRaid], version = ver }
+	
+	elseif cmd == "PRESENCE" then
+		local pageId = data[PRESENCE_PageId]
+		local status = data[PRESENCE_Status]
+		local playerName = data[PRESENCE_PlayerName] or sender
+		local cursorPos = data[PRESENCE_CursorPos]
+		
+		if not pagePresence[pageId] then
+			pagePresence[pageId] = {}
+		end
+		
+		if status == "closed" then
+			pagePresence[pageId][playerName] = nil
+		else
+			pagePresence[pageId][playerName] = {
+				status = status,
+				cursorPos = cursorPos or 0,
+				lastUpdate = time(),
+				class = select(2, UnitClass(Ambiguate(playerName, "none")))
+			}
+		end
+		
+		self:UpdatePresenceDisplay()
+	
+	elseif cmd == "LIVE_EDIT" then
+		if not self:PermissionCheck() then return end
+		
+		local pageId = data[LIVE_EDIT_PageId]
+		local changeType = data[LIVE_EDIT_ChangeType]
+		local position = data[LIVE_EDIT_Position]
+		local text = data[LIVE_EDIT_Text] or ""
+		local length = data[LIVE_EDIT_Length] or 0
+		
+		-- Only process if we're viewing the same page
+		if self:SelectedId() == pageId and self.window and self.window.text then
+			self:ApplyLiveEdit(changeType, position, text, length, sender)
+		end
 	end
 end
 
@@ -348,6 +408,103 @@ function AngryAssign:PermissionCheckFailError(sender)
 	if not warnedPermission then
 		self:Print( RED_FONT_COLOR_CODE .. "You have received a page update from "..Ambiguate(sender, "none").." that was rejected due to insufficient permissions. If you wish to see this page, please adjust your permission settings.|r" )
 		warnedPermission = true
+	end
+end
+
+function AngryAssign:SendPresence(pageId, status, cursorPos)
+	if not pageId then return end
+	local data = { "PRESENCE", pageId, status, PlayerFullName(), cursorPos or 0 }
+	self:SendOutMessage(data, "GUILD")
+end
+
+function AngryAssign:SendLiveEdit(pageId, changeType, position, text, length)
+	if not pageId or not self:PermissionCheck() then return end
+	
+	-- Throttle live edits to prevent spam
+	if liveEditTimer then return end
+	liveEditTimer = C_Timer.NewTimer(0.1, function() liveEditTimer = nil end)
+	
+	local data = { "LIVE_EDIT", pageId, changeType, position, text or "", length or 0 }
+	self:SendOutMessage(data, "GUILD")
+end
+
+function AngryAssign:ApplyLiveEdit(changeType, position, text, length, sender)
+	if not self.window or not self.window.text then return end
+	
+	local currentText = self.window.text:GetText()
+	local newText
+	
+	if changeType == "insert" then
+		newText = currentText:sub(1, position) .. text .. currentText:sub(position + 1)
+	elseif changeType == "delete" then
+		newText = currentText:sub(1, position) .. currentText:sub(position + length + 1)
+	else
+		return
+	end
+	
+	-- Store cursor position before update
+	local cursorPos = self.window.text.editBox:GetCursorPosition()
+	
+	-- Apply the change
+	self.window.text:SetText(newText)
+	
+	-- Restore cursor position, adjusting for the edit
+	if changeType == "insert" and position <= cursorPos then
+		self.window.text.editBox:SetCursorPosition(cursorPos + text:len())
+	elseif changeType == "delete" and position < cursorPos then
+		local adjustment = math.min(length, cursorPos - position)
+		self.window.text.editBox:SetCursorPosition(cursorPos - adjustment)
+	else
+		self.window.text.editBox:SetCursorPosition(cursorPos)
+	end
+	
+	-- Show visual indicator of who made the change
+	self:ShowEditIndicator(sender, position)
+end
+
+function AngryAssign:UpdatePresenceDisplay()
+	if not self.window or not self.presenceFrame then return end
+	
+	local pageId = self:SelectedId()
+	if not pageId or not pagePresence[pageId] then
+		self.presenceFrame:Hide()
+		return
+	end
+	
+	-- Clean up stale presence (users who haven't updated in 30 seconds)
+	local now = time()
+	for player, data in pairs(pagePresence[pageId]) do
+		if now - data.lastUpdate > 30 then
+			pagePresence[pageId][player] = nil
+		end
+	end
+	
+	-- Update presence display
+	local presenceList = {}
+	for player, data in pairs(pagePresence[pageId]) do
+		if player ~= PlayerFullName() then
+			table.insert(presenceList, {
+				name = Ambiguate(player, "short"),
+				status = data.status,
+				class = data.class or "WARRIOR"
+			})
+		end
+	end
+	
+	if #presenceList > 0 then
+		self:RefreshPresenceFrame(presenceList)
+		self.presenceFrame:Show()
+	else
+		self.presenceFrame:Hide()
+	end
+end
+
+function AngryAssign:ShowEditIndicator(sender, position)
+	-- Brief visual flash to show where someone else is editing
+	-- This could be enhanced with a more sophisticated indicator
+	if self.window and self.window.text then
+		-- Simple implementation: briefly highlight the edit location
+		-- Could be expanded to show user colors, animations, etc.
 	end
 end
 
@@ -545,7 +702,12 @@ end
 function AngryAssign_ToggleWindow()
 	if not AngryAssign.window then AngryAssign:CreateWindow() end
 	if AngryAssign.window:IsShown() then 
-		AngryAssign.window:Hide() 
+		AngryAssign.window:Hide()
+		-- Clean up presence when closing window
+		if AngryAssign.currentEditPageId then
+			AngryAssign:SendPresence(AngryAssign.currentEditPageId, "closed")
+			AngryAssign.currentEditPageId = nil
+		end
 	else
 		AngryAssign.window:Show() 
 	end
@@ -768,11 +930,64 @@ local function AngryAssign_ClearPage(widget, event, value)
 	AngryAssign:SendDisplay( nil, true )
 end
 
+local previousText = ""
 local function AngryAssign_TextChanged(widget, event, value)
 	AngryAssign.window.button_revert:SetDisabled(false)
 	AngryAssign.window.button_restore:SetDisabled(false)
 	AngryAssign.window.button_display:SetDisabled(true)
 	AngryAssign.window.button_output:SetDisabled(true)
+	
+	-- Send editing presence update
+	local pageId = AngryAssign:SelectedId()
+	if pageId and AngryAssign.currentEditPageId ~= pageId then
+		AngryAssign.currentEditPageId = pageId
+	end
+	
+	-- Send presence update if we just started editing
+	if pageId and pagePresence[pageId] then
+		local myPresence = pagePresence[pageId][PlayerFullName()]
+		if not myPresence or myPresence.status ~= "editing" then
+			AngryAssign:SendPresence(pageId, "editing", widget.editBox:GetCursorPosition())
+		end
+	end
+	
+	-- Detect and send live edit changes
+	local newText = value or widget:GetText()
+	if previousText ~= newText and pageId and AngryAssign:PermissionCheck() then
+		-- Simple diff detection - could be enhanced with more sophisticated algorithm
+		local oldLen = string.len(previousText)
+		local newLen = string.len(newText)
+		
+		if newLen > oldLen then
+			-- Text was inserted
+			local insertPos = 0
+			for i = 1, oldLen do
+				if previousText:sub(i, i) ~= newText:sub(i, i) then
+					insertPos = i - 1
+					break
+				end
+			end
+			if insertPos == 0 and oldLen > 0 then insertPos = oldLen end
+			
+			local insertedText = newText:sub(insertPos + 1, insertPos + (newLen - oldLen))
+			AngryAssign:SendLiveEdit(pageId, "insert", insertPos, insertedText)
+			
+		elseif newLen < oldLen then
+			-- Text was deleted
+			local deletePos = 0
+			for i = 1, newLen do
+				if previousText:sub(i, i) ~= newText:sub(i, i) then
+					deletePos = i - 1
+					break
+				end
+			end
+			if deletePos == 0 and newLen > 0 then deletePos = newLen end
+			
+			AngryAssign:SendLiveEdit(pageId, "delete", deletePos, "", oldLen - newLen)
+		end
+		
+		previousText = newText
+	end
 end
 
 local function AngryAssign_TextEntered(widget, event, value)
@@ -1046,11 +1261,125 @@ function AngryAssign:CreateWindow()
 	button_clear:SetCallback("OnClick", AngryAssign_ClearPage)
 	window:AddChild(button_clear)
 	window.button_clear = button_clear
+	
+	-- Create presence display frame
+	self:CreatePresenceFrame()
 
 	self:UpdateSelected(true)
 	self:UpdateMedia()
 	
 	--self:CreateIconPicker()
+end
+
+function AngryAssign:CreatePresenceFrame()
+	local window = self.window
+	if not window then return end
+	
+	local presenceFrame = CreateFrame("Frame", nil, window.frame)
+	presenceFrame:SetSize(200, 80)
+	presenceFrame:SetPoint("TOPRIGHT", window.frame, "TOPRIGHT", -20, -50)
+	
+	-- Background
+	presenceFrame.bg = presenceFrame:CreateTexture(nil, "BACKGROUND")
+	presenceFrame.bg:SetAllPoints()
+	presenceFrame.bg:SetColorTexture(0, 0, 0, 0.5)
+	
+	-- Border
+	presenceFrame:SetBackdrop({
+		bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background",
+		edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
+		tile = true,
+		tileSize = 32,
+		edgeSize = 8,
+		insets = { left = 2, right = 2, top = 2, bottom = 2 }
+	})
+	presenceFrame:SetBackdropColor(0, 0, 0, 0.7)
+	
+	-- Title
+	local title = presenceFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+	title:SetPoint("TOP", presenceFrame, "TOP", 0, -5)
+	title:SetText("Active Editors")
+	title:SetTextColor(1, 0.8, 0)
+	presenceFrame.title = title
+	
+	-- Container for user entries
+	presenceFrame.entries = {}
+	presenceFrame.entryPool = {}
+	
+	presenceFrame:Hide()
+	self.presenceFrame = presenceFrame
+end
+
+function AngryAssign:RefreshPresenceFrame(presenceList)
+	if not self.presenceFrame then return end
+	
+	-- Hide all existing entries
+	for _, entry in ipairs(self.presenceFrame.entries) do
+		entry:Hide()
+		table.insert(self.presenceFrame.entryPool, entry)
+	end
+	self.presenceFrame.entries = {}
+	
+	-- Create/reuse entries for each user
+	local yOffset = -25
+	for i, data in ipairs(presenceList) do
+		local entry = table.remove(self.presenceFrame.entryPool) or self:CreatePresenceEntry()
+		
+		entry:SetParent(self.presenceFrame)
+		entry:SetPoint("TOPLEFT", self.presenceFrame, "TOPLEFT", 10, yOffset)
+		
+		-- Set class color
+		local classColor = RAID_CLASS_COLORS[data.class] or RAID_CLASS_COLORS["WARRIOR"]
+		entry.name:SetTextColor(classColor.r, classColor.g, classColor.b)
+		entry.name:SetText(data.name)
+		
+		-- Set status icon
+		if data.status == "editing" then
+			entry.icon:SetTexture("Interface\\RAIDFRAME\\ReadyCheck-Ready")
+			entry.status:SetText("Editing")
+			entry.status:SetTextColor(0, 1, 0)
+		else
+			entry.icon:SetTexture("Interface\\RAIDFRAME\\ReadyCheck-Waiting")
+			entry.status:SetText("Viewing")
+			entry.status:SetTextColor(1, 1, 0)
+		end
+		
+		entry:Show()
+		table.insert(self.presenceFrame.entries, entry)
+		
+		yOffset = yOffset - 20
+		if i >= 3 then break end -- Limit to 3 visible users
+	end
+	
+	-- Adjust frame height based on entries
+	local height = 35 + (#presenceList * 20)
+	self.presenceFrame:SetHeight(math.min(height, 95))
+end
+
+function AngryAssign:CreatePresenceEntry()
+	local entry = CreateFrame("Frame")
+	entry:SetSize(180, 18)
+	
+	-- Icon
+	local icon = entry:CreateTexture(nil, "ARTWORK")
+	icon:SetSize(16, 16)
+	icon:SetPoint("LEFT", entry, "LEFT", 0, 0)
+	entry.icon = icon
+	
+	-- Player name
+	local name = entry:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+	name:SetPoint("LEFT", icon, "RIGHT", 4, 0)
+	name:SetJustifyH("LEFT")
+	name:SetWidth(80)
+	entry.name = name
+	
+	-- Status text
+	local status = entry:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+	status:SetPoint("LEFT", name, "RIGHT", 5, 0)
+	status:SetJustifyH("LEFT")
+	entry.status = status
+	
+	return entry
 end
 
 local function AngryAssign_IconPicker_Clicked(widget, event)
@@ -1250,16 +1579,35 @@ end
 
 function AngryAssign:UpdateSelected(destructive)
 	if not self.window then return end
-	local page = AngryAssign_Pages[ self:SelectedId() ]
+	local oldPageId = self.currentEditPageId
+	local newPageId = self:SelectedId()
+	local page = AngryAssign_Pages[ newPageId ]
 	local permission = self:PermissionCheck()
+	
+	-- Send presence update when switching pages
+	if oldPageId ~= newPageId then
+		if oldPageId then
+			self:SendPresence(oldPageId, "closed")
+		end
+		if newPageId then
+			self:SendPresence(newPageId, "viewing")
+		end
+		self.currentEditPageId = newPageId
+	end
+	
 	if destructive or not self.window.text.button:IsEnabled() then
 		if page then
 			self.window.text:SetText( page.Contents )
+			previousText = page.Contents -- Reset previousText for live edit tracking
 		else
 			self.window.text:SetText("")
+			previousText = ""
 		end
 		self.window.text.button:Disable()
 	end
+	
+	-- Update presence display for this page
+	self:UpdatePresenceDisplay()
 	if page and permission then
 		self.window.button_rename:SetDisabled(false)
 		self.window.button_revert:SetDisabled(not self.window.text.button:IsEnabled())
