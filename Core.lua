@@ -20,7 +20,8 @@ local AngryAssign_Timestamp = '@project-date-integer@'
 local isClassicVanilla = WOW_PROJECT_ID == WOW_PROJECT_CLASSIC
 local isClassicTBC = WOW_PROJECT_ID == WOW_PROJECT_BURNING_CRUSADE_CLASSIC
 local isClassicWrath = WOW_PROJECT_ID == WOW_PROJECT_WRATH_CLASSIC
-local isClassic = isClassicVanilla or isClassicTBC or isClassicWrath
+local isClassicCata = WOW_PROJECT_ID == WOW_PROJECT_CATACLYSM_CLASSIC
+local isClassic = isClassicVanilla or isClassicTBC or isClassicWrath or isClassicCata
 
 local protocolVersion = 1
 local comPrefix = "AnAss"..protocolVersion
@@ -155,9 +156,13 @@ local function EnsureUnitShortName(unit)
 	end
 end
 
+local _cached_player_name = nil
 local function PlayerFullName()
-	if not _player_realm then _player_realm = select(2, UnitFullName('player')) end
-	return UnitName('player')..'-'.._player_realm
+	if not _cached_player_name then
+		if not _player_realm then _player_realm = select(2, UnitFullName('player')) end
+		_cached_player_name = UnitName('player')..'-'.._player_realm
+	end
+	return _cached_player_name
 end
 
 local function RGBToHex(r, g, b, a)
@@ -561,7 +566,7 @@ local function AngryAssign_AddPage(widget, event, value)
 				if text ~= "" then AngryAssign:CreatePage(text) end
 			end,
 			EditBoxOnEnterPressed = function(self)
-				local text = self:GetParent().editBox:GetText()
+				local text = self:GetText()
 				if text ~= "" then AngryAssign:CreatePage(text) end
 				self:GetParent():Hide()
 			end,
@@ -590,7 +595,7 @@ local function AngryAssign_RenamePage(pageId)
 				AngryAssign:RenamePage(page.Id, text)
 			end,
 			EditBoxOnEnterPressed = function(self)
-				local text = self:GetParent().editBox:GetText()
+				local text = self:GetText()
 				AngryAssign:RenamePage(page.Id, text)
 				self:GetParent():Hide()
 			end,
@@ -642,7 +647,7 @@ local function AngryAssign_AddCategory(widget, event, value)
 				if text ~= "" then AngryAssign:CreateCategory(text) end
 			end,
 			EditBoxOnEnterPressed = function(self)
-				local text = self:GetParent().editBox:GetText()
+				local text = self:GetText()
 				if text ~= "" then AngryAssign:CreateCategory(text) end
 				self:GetParent():Hide()
 			end,
@@ -671,7 +676,7 @@ local function AngryAssign_RenameCategory(catId)
 				AngryAssign:RenameCategory(cat.Id, text)
 			end,
 			EditBoxOnEnterPressed = function(self)
-				local text = self:GetParent().editBox:GetText()
+				local text = self:GetText()
 				AngryAssign:RenameCategory(cat.Id, text)
 				self:GetParent():Hide()
 			end,
@@ -1915,6 +1920,63 @@ local function ci_pattern(pattern)
 	return p
 end
 
+-- Pre-compile all patterns for performance
+local COMPILED_PATTERNS = {
+	colors = {
+		[ci_pattern('|cblue')] = "|cff00cbf4",
+		[ci_pattern('|cgreen')] = "|cff0adc00",
+		[ci_pattern('|cred')] = "|cffeb310c",
+		[ci_pattern('|cyellow')] = "|cfffaf318",
+		[ci_pattern('|corange')] = "|cffff9d00",
+		[ci_pattern('|cpink')] = "|cfff64c97",
+		[ci_pattern('|cpurple')] = "|cffdc44eb",
+		[ci_pattern('|cdruid')] = "|cffff7d0a",
+		[ci_pattern('|chunter')] = "|cffabd473",
+		[ci_pattern('|cmage')] = "|cff40C7eb",
+		[ci_pattern('|cpaladin')] = "|cfff58cba",
+		[ci_pattern('|cpriest')] = "|cffffffff",
+		[ci_pattern('|crogue')] = "|cfffff569",
+		[ci_pattern('|cshaman')] = "|cff0070de",
+		[ci_pattern('|cwarlock')] = "|cff8787ed",
+		[ci_pattern('|cwarrior')] = "|cffc79c6e",
+	},
+	icons = {
+		[ci_pattern('{star}')] = "{rt1}",
+		[ci_pattern('{circle}')] = "{rt2}",
+		[ci_pattern('{diamond}')] = "{rt3}",
+		[ci_pattern('{triangle}')] = "{rt4}",
+		[ci_pattern('{moon}')] = "{rt5}",
+		[ci_pattern('{square}')] = "{rt6}",
+		[ci_pattern('{cross}')] = "{rt7}",
+		[ci_pattern('{x}')] = "{rt7}",
+		[ci_pattern('{skull}')] = "{rt8}",
+		[ci_pattern('{healthstone}')] = "{hs}",
+		[ci_pattern('{hs}')] = "|TInterface\\Icons\\INV_Stone_04:0|t",
+		[ci_pattern('{damage}')] = "{dps}",
+		[ci_pattern('{tank}')] = "|TInterface\\LFGFrame\\UI-LFG-ICON-PORTRAITROLES:0:0:0:0:64:64:0:19:22:41|t",
+		[ci_pattern('{healer}')] = "|TInterface\\LFGFrame\\UI-LFG-ICON-PORTRAITROLES:0:0:0:0:64:64:20:39:1:20|t",
+		[ci_pattern('{dps}')] = "|TInterface\\LFGFrame\\UI-LFG-ICON-PORTRAITROLES:0:0:0:0:64:64:20:39:22:41|t",
+	},
+	classes = {
+		[ci_pattern('{hunter}')] = "|TInterface\\GLUES\\CHARACTERCREATE\\UI-CHARACTERCREATE-CLASSES:0:0:0:0:64:64:0:16:16:32|t",
+		[ci_pattern('{warrior}')] = "|TInterface\\GLUES\\CHARACTERCREATE\\UI-CHARACTERCREATE-CLASSES:0:0:0:0:64:64:0:16:0:16|t",
+		[ci_pattern('{rogue}')] = "|TInterface\\GLUES\\CHARACTERCREATE\\UI-CHARACTERCREATE-CLASSES:0:0:0:0:64:64:32:48:0:16|t",
+		[ci_pattern('{mage}')] = "|TInterface\\GLUES\\CHARACTERCREATE\\UI-CHARACTERCREATE-CLASSES:0:0:0:0:64:64:16:32:0:16|t",
+		[ci_pattern('{priest}')] = "|TInterface\\GLUES\\CHARACTERCREATE\\UI-CHARACTERCREATE-CLASSES:0:0:0:0:64:64:32:48:16:32|t",
+		[ci_pattern('{warlock}')] = "|TInterface\\GLUES\\CHARACTERCREATE\\UI-CHARACTERCREATE-CLASSES:0:0:0:0:64:64:48:64:16:32|t",
+		[ci_pattern('{paladin}')] = "|TInterface\\GLUES\\CHARACTERCREATE\\UI-CHARACTERCREATE-CLASSES:0:0:0:0:64:64:0:16:32:48|t",
+		[ci_pattern('{druid}')] = "|TInterface\\GLUES\\CHARACTERCREATE\\UI-CHARACTERCREATE-CLASSES:0:0:0:0:64:64:48:64:0:16|t",
+		[ci_pattern('{shaman}')] = "|TInterface\\GLUES\\CHARACTERCREATE\\UI-CHARACTERCREATE-CLASSES:0:0:0:0:64:64:16:32:16:32|t",
+	},
+	-- Dynamic patterns that need function calls
+	dynamic = {
+		rt = ci_pattern('{rt([1-8])}'),
+		spell = ci_pattern('{spell%s+(%d+)}'),
+		iconId = ci_pattern('{icon%s+(%d+)}'),
+		iconName = ci_pattern('{icon%s+([%w_]+)}'),
+	}
+}
+
 function AngryAssign:UpdateDisplayedIfNewGroup()
 	local newGroup = self:GetCurrentGroup()
 	if newGroup ~= currentGroup then
@@ -1940,23 +2002,13 @@ function AngryAssign:UpdateDisplayed()
 		local highlightHex = self:GetConfig('highlightColor')
 		
 		text = text:gsub("||", "|")
-			:gsub(ci_pattern('|cblue'), "|cff00cbf4")
-			:gsub(ci_pattern('|cgreen'), "|cff0adc00")
-			:gsub(ci_pattern('|cred'), "|cffeb310c")
-			:gsub(ci_pattern('|cyellow'), "|cfffaf318")
-			:gsub(ci_pattern('|corange'), "|cffff9d00")
-			:gsub(ci_pattern('|cpink'), "|cfff64c97")
-			:gsub(ci_pattern('|cpurple'), "|cffdc44eb")
-			:gsub(ci_pattern('|cdruid'), "|cffff7d0a")
-			:gsub(ci_pattern('|chunter'), "|cffabd473")
-			:gsub(ci_pattern('|cmage'), "|cff40C7eb")
-			:gsub(ci_pattern('|cpaladin'), "|cfff58cba")
-			:gsub(ci_pattern('|cpriest'), "|cffffffff")
-			:gsub(ci_pattern('|crogue'), "|cfffff569")
-			:gsub(ci_pattern('|cshaman'), "|cff0070de")
-			:gsub(ci_pattern('|cwarlock'), "|cff8787ed")
-			:gsub(ci_pattern('|cwarrior'), "|cffc79c6e")
-			:gsub("([^%s%p]+)", function(word)
+		
+		-- Apply color replacements using cached patterns
+		for pattern, replacement in pairs(COMPILED_PATTERNS.colors) do
+			text = text:gsub(pattern, replacement)
+		end
+		
+		text = text:gsub("([^%s%p]+)", function(word)
 				local word_lower = word:lower()
 				for _, token in ipairs(highlights) do
 					if token == word_lower then
@@ -1965,38 +2017,26 @@ function AngryAssign:UpdateDisplayed()
 				end
 				return word
 			end)
-			:gsub(ci_pattern('{spell%s+(%d+)}'), function(id)
+			:gsub(COMPILED_PATTERNS.dynamic.spell, function(id)
 				return GetSpellLink(id)
 			end)
-			:gsub(ci_pattern('{star}'), "{rt1}")
-			:gsub(ci_pattern('{circle}'), "{rt2}")
-			:gsub(ci_pattern('{diamond}'), "{rt3}")
-			:gsub(ci_pattern('{triangle}'), "{rt4}")
-			:gsub(ci_pattern('{moon}'), "{rt5}")
-			:gsub(ci_pattern('{square}'), "{rt6}")
-			:gsub(ci_pattern('{cross}'), "{rt7}")
-			:gsub(ci_pattern('{x}'), "{rt7}")
-			:gsub(ci_pattern('{skull}'), "{rt8}")
-			:gsub(ci_pattern('{rt([1-8])}'), "|TInterface\\TargetingFrame\\UI-RaidTargetingIcon_%1:0|t" )
-			:gsub(ci_pattern('{healthstone}'), "{hs}")
-			:gsub(ci_pattern('{hs}'), "|TInterface\\Icons\\INV_Stone_04:0|t")
-			:gsub(ci_pattern('{icon%s+(%d+)}'), function(id)
+		
+		-- Apply icon replacements using cached patterns
+		for pattern, replacement in pairs(COMPILED_PATTERNS.icons) do
+			text = text:gsub(pattern, replacement)
+		end
+		
+		-- Apply class icon replacements using cached patterns
+		for pattern, replacement in pairs(COMPILED_PATTERNS.classes) do
+			text = text:gsub(pattern, replacement)
+		end
+		
+		-- Apply dynamic patterns
+		text = text:gsub(COMPILED_PATTERNS.dynamic.rt, "|TInterface\\TargetingFrame\\UI-RaidTargetingIcon_%1:0|t")
+			:gsub(COMPILED_PATTERNS.dynamic.iconId, function(id)
 				return format("|T%s:0|t", select(3, GetSpellInfo(tonumber(id))) )
 			end)
-			:gsub(ci_pattern('{icon%s+([%w_]+)}'), "|TInterface\\Icons\\%1:0|t")
-			:gsub(ci_pattern('{damage}'), "{dps}")
-			:gsub(ci_pattern('{tank}'), "|TInterface\\LFGFrame\\UI-LFG-ICON-PORTRAITROLES:0:0:0:0:64:64:0:19:22:41|t")
-			:gsub(ci_pattern('{healer}'), "|TInterface\\LFGFrame\\UI-LFG-ICON-PORTRAITROLES:0:0:0:0:64:64:20:39:1:20|t")
-			:gsub(ci_pattern('{dps}'), "|TInterface\\LFGFrame\\UI-LFG-ICON-PORTRAITROLES:0:0:0:0:64:64:20:39:22:41|t")
-			:gsub(ci_pattern('{hunter}'), "|TInterface\\GLUES\\CHARACTERCREATE\\UI-CHARACTERCREATE-CLASSES:0:0:0:0:64:64:0:16:16:32|t")
-			:gsub(ci_pattern('{warrior}'), "|TInterface\\GLUES\\CHARACTERCREATE\\UI-CHARACTERCREATE-CLASSES:0:0:0:0:64:64:0:16:0:16|t")
-			:gsub(ci_pattern('{rogue}'), "|TInterface\\GLUES\\CHARACTERCREATE\\UI-CHARACTERCREATE-CLASSES:0:0:0:0:64:64:32:48:0:16|t")
-			:gsub(ci_pattern('{mage}'), "|TInterface\\GLUES\\CHARACTERCREATE\\UI-CHARACTERCREATE-CLASSES:0:0:0:0:64:64:16:32:0:16|t")
-			:gsub(ci_pattern('{priest}'), "|TInterface\\GLUES\\CHARACTERCREATE\\UI-CHARACTERCREATE-CLASSES:0:0:0:0:64:64:32:48:16:32|t")
-			:gsub(ci_pattern('{warlock}'), "|TInterface\\GLUES\\CHARACTERCREATE\\UI-CHARACTERCREATE-CLASSES:0:0:0:0:64:64:48:64:16:32|t")
-			:gsub(ci_pattern('{paladin}'), "|TInterface\\GLUES\\CHARACTERCREATE\\UI-CHARACTERCREATE-CLASSES:0:0:0:0:64:64:0:16:32:48|t")
-			:gsub(ci_pattern('{druid}'), "|TInterface\\GLUES\\CHARACTERCREATE\\UI-CHARACTERCREATE-CLASSES:0:0:0:0:64:64:48:64:0:16|t")
-			:gsub(ci_pattern('{shaman}'), "|TInterface\\GLUES\\CHARACTERCREATE\\UI-CHARACTERCREATE-CLASSES:0:0:0:0:64:64:16:32:16:32|t")
+			:gsub(COMPILED_PATTERNS.dynamic.iconName, "|TInterface\\Icons\\%1:0|t")
 		
         if not isClassicVanilla then
             text = text:gsub(ci_pattern('{hero}'), "{heroism}")
@@ -2010,7 +2050,7 @@ function AngryAssign:UpdateDisplayed()
 					:gsub(ci_pattern('{dk}'), "{deathknight}")
 					:gsub(ci_pattern('{deathknight}'), "|TInterface\\GLUES\\CHARACTERCREATE\\UI-CHARACTERCREATE-CLASSES:0:0:0:0:64:64:16:32:32:48|t")
 						
-				if not isClassicWrath then
+				if not isClassicWrath and not isClassicCata then
 					text = text:gsub(ci_pattern('|cmonk'), "|cff00ff96")
 						:gsub(ci_pattern('|cdh'), "|cdemonhunter")
 						:gsub(ci_pattern('|cdemonhunter'), "|cffa330c9")
@@ -2128,7 +2168,7 @@ function AngryAssign:OutputDisplayed(id)
 					:gsub(ci_pattern('{dk}'), "{deathknight}")
 					:gsub(ci_pattern('{deathknight}'), LOCALIZED_CLASS_NAMES_MALE["DEATHKNIGHT"])
 						
-				if not isClassicWrath then
+				if not isClassicWrath and not isClassicCata then
 					output = output:gsub(ci_pattern('|cmonk'), "")
 						:gsub(ci_pattern('|cdh'), "|cdemonhunter")
 						:gsub(ci_pattern('|cdemonhunter'), "")
